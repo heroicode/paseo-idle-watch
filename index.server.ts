@@ -11,9 +11,11 @@ export default function contribute(server: PluginServerContext) {
     return monitor.status();
   });
 
-  server.handle(testNotificationRpc, async () => {
-    const { summary } = await notify("Paseo: tokens idle", "Test notification from Idle watch.");
-    return { summary };
+  server.handle(testNotificationRpc, async (_input, { paseo }) => {
+    monitor.attach(paseo);
+    const message = await monitor.usageMessage(paseo);
+    const { summary } = await notify("Paseo: current token usage", message);
+    return { message, summary };
   });
 
   const removeStarted = server.on("agent.turn_started", async ({ agent }, { paseo }) => {

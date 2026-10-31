@@ -141,11 +141,11 @@ export function SettingsScreen({ theme }: PluginSurfaceProps) {
         />
         <SettingsAction
           label="Test notification"
-          hint={testResult ?? "Posts to this machine's desktop and to the Paseo mobile app."}
+          hint={testResult ?? "Sends your current usage to this machine's desktop and the Paseo mobile app."}
           actionLabel="Send"
           onPress={() =>
             void sendTest({}).then(
-              ({ summary }) => setTestResult(summary),
+              ({ message, summary }) => setTestResult(`${message} ${summary}.`),
               (error: unknown) => setTestResult(String(error)),
             )
           }

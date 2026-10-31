@@ -1,7 +1,7 @@
 import type { PluginHandlerContext, PluginSettings } from "@getpaseo/plugin/server";
 import type { RpcOutput } from "@getpaseo/plugin";
 import { idleSettings, idleWindowMs, type statusRpc } from "../shared/contracts";
-import { formatDuration } from "../shared/format";
+import { formatDuration, formatUsage } from "../shared/format";
 import { createIdleTracker, quotaMeters } from "./idle-tracker";
 import { notify } from "./notify";
 
@@ -104,6 +104,21 @@ export function createMonitor(settings: PluginSettings<typeof idleSettings.schem
 
     recordUse(provider: string): void {
       tracker.recordUse(provider, Date.now());
+    },
+
+    /** Reads quota now rather than reporting the last poll, since the numbers are the point. */
+    async usageMessage(client: Paseo): Promise<string> {
+      const usage = await client.providers
+        .listUsage()
+        .then(({ providers }) => formatUsage(providers))
+        .catch((error) => {
+          console.warn("Reading quota failed", error);
+          return null;
+        });
+      const lastUsed = tracker.lastUsedAt();
+      const seen =
+        lastUsed === null ? "No token use seen yet." : `Last used ${formatDuration(Date.now() - lastUsed)} ago.`;
+      return `${usage ?? "Usage could not be read."} ${seen}`;
     },
 
     async status(): Promise<RpcOutput<typeof statusRpc>> {

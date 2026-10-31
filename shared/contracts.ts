@@ -42,5 +42,5 @@ export const statusRpc = defineRpc({
 export const testNotificationRpc = defineRpc({
   name: "idle.test-notification",
   input: z.object({}),
-  output: z.object({ summary: z.string() }),
+  output: z.object({ message: z.string(), summary: z.string() }),
 });

@@ -1,101 +1,154 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createIdleTracker, quotaMeters } from "../server/idle-tracker.ts";
+import { isWatched } from "../shared/contracts.ts";
 
 const MIN = 60_000;
-const quota = (pct, extra = {}) => [
-  { id: "claude", name: "Claude", readable: true, meters: { "window:5h": pct }, ...extra },
-];
+const policy = (idleMs, repeatMs = 0, overrides = {}) => ({
+  idleMs,
+  repeatMs,
+  isWatched: (id, hasQuota) => isWatched(overrides, id, hasQuota),
+});
+const quota = (id, pct, extra = {}) => ({
+  id,
+  name: id,
+  readable: true,
+  meters: { "window:5h": pct },
+  ...extra,
+});
+const noQuota = (id) => ({ id, name: id, readable: true, meters: {} });
+const dueIds = (tracker, ...args) => tracker.dueAlerts(...args).map((use) => use.id);
 
-test("does not alert before the window passes, counted from when watching began", () => {
-  const tracker = createIdleTracker(100 * MIN);
-  tracker.observeAgents([{ provider: "claude", activeAt: 0 }]);
-  assert.equal(tracker.shouldAlert(30 * MIN, 129 * MIN), false);
-  assert.equal(tracker.shouldAlert(30 * MIN, 130 * MIN), true);
+test("one provider going idle alerts even while another is busy", () => {
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("claude", 1), quota("codex", 1)], 0);
+  tracker.recordUse("claude", 25 * MIN);
+  assert.deepEqual(dueIds(tracker, policy(30 * MIN), 30 * MIN), ["codex"]);
+  assert.deepEqual(dueIds(tracker, policy(30 * MIN), 31 * MIN), []);
 });
 
-test("alerts once per idle stretch and rearms after use", () => {
-  const tracker = createIdleTracker(0);
-  assert.equal(tracker.shouldAlert(10 * MIN, 10 * MIN), true);
-  assert.equal(tracker.shouldAlert(10 * MIN, 11 * MIN), false);
-  assert.equal(tracker.shouldAlert(10 * MIN, 500 * MIN), false);
+test("providers idle at the same check share one alert, and each alerts once a stretch", () => {
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("claude", 1), quota("codex", 1)], 0);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 10 * MIN), ["claude", "codex"]);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 500 * MIN), []);
   tracker.recordUse("claude", 501 * MIN);
-  assert.equal(tracker.shouldAlert(10 * MIN, 502 * MIN), false);
-  assert.equal(tracker.shouldAlert(10 * MIN, 511 * MIN), true);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 502 * MIN), []);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 511 * MIN), ["claude"]);
 });
 
-test("repeats on schedule while idle, and stops when tokens are used", () => {
-  const tracker = createIdleTracker(0);
-  assert.equal(tracker.shouldAlert(10 * MIN, 10 * MIN, 5 * MIN), true);
-  assert.equal(tracker.shouldAlert(10 * MIN, 14 * MIN, 5 * MIN), false);
-  assert.equal(tracker.shouldAlert(10 * MIN, 15 * MIN, 5 * MIN), true);
-  assert.equal(tracker.shouldAlert(10 * MIN, 16 * MIN, 5 * MIN), false);
+test("a provider's clock starts when it is first seen, not at its old activity", () => {
+  const tracker = createIdleTracker();
+  tracker.observeAgents([{ provider: "claude", activeAt: 1 * MIN }], 100 * MIN);
+  assert.deepEqual(dueIds(tracker, policy(30 * MIN), 129 * MIN), []);
+  assert.deepEqual(dueIds(tracker, policy(30 * MIN), 130 * MIN), ["claude"]);
+});
+
+test("nothing alerts before any provider is known, however long it has been", () => {
+  const tracker = createIdleTracker();
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 500 * MIN), []);
+  tracker.observeQuota([quota("claude", 1)], 501 * MIN);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 510 * MIN), []);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 511 * MIN), ["claude"]);
+});
+
+test("providers with no quota are off by default, and a switch overrides either way", () => {
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("claude", 1), noQuota("copilot")], 0);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 10 * MIN), ["claude"]);
+
+  const switched = createIdleTracker();
+  switched.observeQuota([quota("claude", 1), noQuota("copilot")], 0);
+  const overrides = { copilot: true, claude: false };
+  assert.deepEqual(dueIds(switched, policy(10 * MIN, 0, overrides), 10 * MIN), ["copilot"]);
+});
+
+test("a provider only seen through agents is watched until a quota read says it has none", () => {
+  const tracker = createIdleTracker();
+  tracker.recordUse("pi", 0);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 10 * MIN), ["pi"]);
+  tracker.observeQuota([quota("claude", 1)], 11 * MIN);
+  assert.equal(tracker.providers(policy(10 * MIN), 12 * MIN).find((use) => use.id === "pi").hasQuota, false);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 30 * MIN), ["claude"]);
+});
+
+test("an unreadable quota stays watched and keeps what was known", () => {
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("codex", 0, { readable: false, meters: {} }), noQuota("copilot")], 0);
+  tracker.observeQuota([quota("copilot", 0, { readable: false, meters: {} })], MIN);
+  const seen = tracker.providers(policy(10 * MIN), 2 * MIN);
+  assert.equal(seen.find((use) => use.id === "codex").hasQuota, true);
+  assert.equal(seen.find((use) => use.id === "copilot").hasQuota, false);
+});
+
+test("turning a provider on while it is idle alerts right away", () => {
+  const tracker = createIdleTracker();
+  tracker.observeQuota([noQuota("copilot")], 0);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 20 * MIN), []);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN, 0, { copilot: true }), 21 * MIN), ["copilot"]);
+});
+
+test("repeats per provider while idle, and stops when that provider is used", () => {
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("claude", 1)], 0);
+  const repeating = policy(10 * MIN, 5 * MIN);
+  assert.deepEqual(dueIds(tracker, repeating, 10 * MIN), ["claude"]);
+  assert.deepEqual(dueIds(tracker, repeating, 14 * MIN), []);
+  assert.deepEqual(dueIds(tracker, repeating, 15 * MIN), ["claude"]);
   tracker.recordUse("claude", 17 * MIN);
-  assert.equal(tracker.shouldAlert(10 * MIN, 22 * MIN, 5 * MIN), false);
-  assert.equal(tracker.shouldAlert(10 * MIN, 27 * MIN, 5 * MIN), true);
+  assert.deepEqual(dueIds(tracker, repeating, 22 * MIN), []);
+  assert.deepEqual(dueIds(tracker, repeating, 27 * MIN), ["claude"]);
 });
 
 test("a check arriving a moment early still counts as the repeat", () => {
-  const tracker = createIdleTracker(0);
-  assert.equal(tracker.shouldAlert(MIN, 60_000, MIN), true);
-  assert.equal(tracker.shouldAlert(MIN, 119_900, MIN), true);
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("claude", 1)], 0);
+  assert.deepEqual(dueIds(tracker, policy(MIN, MIN), 60_000), ["claude"]);
+  assert.deepEqual(dueIds(tracker, policy(MIN, MIN), 119_900), ["claude"]);
 });
 
-test("any provider's use keeps the whole watch from alerting", () => {
-  const tracker = createIdleTracker(0);
-  tracker.recordUse("claude", 1 * MIN);
-  tracker.recordUse("codex", 50 * MIN);
-  assert.equal(tracker.shouldAlert(30 * MIN, 60 * MIN), false);
-  assert.equal(tracker.lastUsedAt(), 50 * MIN);
-});
-
-test("a rising quota meter counts as use, seen at the time of the reading", () => {
-  const tracker = createIdleTracker(0);
-  tracker.observeQuota(quota(10), 5 * MIN);
+test("a rising quota meter counts as use for that provider only", () => {
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("claude", 10), quota("codex", 10)], 5 * MIN);
   assert.equal(tracker.lastUsedAt(), null);
-  tracker.observeQuota(quota(10), 10 * MIN);
-  assert.equal(tracker.lastUsedAt(), null);
-  tracker.observeQuota(quota(11), 15 * MIN);
-  assert.equal(tracker.lastUsedAt(), 15 * MIN);
+  tracker.observeQuota([quota("claude", 11), quota("codex", 10)], 15 * MIN);
+  const seen = tracker.providers(policy(MIN), 15 * MIN);
+  assert.equal(seen.find((use) => use.id === "claude").lastUsedAt, 15 * MIN);
+  assert.equal(seen.find((use) => use.id === "codex").lastUsedAt, null);
 });
 
 test("a quota window resetting is not use", () => {
-  const tracker = createIdleTracker(0);
-  tracker.observeQuota(quota(80), 5 * MIN);
-  tracker.observeQuota(quota(0), 10 * MIN);
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("claude", 80)], 5 * MIN);
+  tracker.observeQuota([quota("claude", 0)], 10 * MIN);
   assert.equal(tracker.lastUsedAt(), null);
 });
 
-test("an unreadable quota keeps its baseline and does not count as use", () => {
-  const tracker = createIdleTracker(0);
-  tracker.observeQuota(quota(10), 5 * MIN);
-  tracker.observeQuota(quota(0, { readable: false, meters: {} }), 10 * MIN);
+test("an unreadable reading keeps the quota baseline", () => {
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("claude", 10)], 5 * MIN);
+  tracker.observeQuota([quota("claude", 0, { readable: false, meters: {} })], 10 * MIN);
   assert.equal(tracker.lastUsedAt(), null);
-  tracker.observeQuota(quota(12), 15 * MIN);
+  tracker.observeQuota([quota("claude", 12)], 15 * MIN);
   assert.equal(tracker.lastUsedAt(), 15 * MIN);
 });
 
 test("raising the window past the current idle time rearms the alert", () => {
-  const tracker = createIdleTracker(0);
-  assert.equal(tracker.shouldAlert(10 * MIN, 20 * MIN), true);
-  assert.equal(tracker.shouldAlert(60 * MIN, 21 * MIN), false);
-  assert.equal(tracker.shouldAlert(60 * MIN, 60 * MIN), true);
+  const tracker = createIdleTracker();
+  tracker.observeQuota([quota("claude", 1)], 0);
+  assert.deepEqual(dueIds(tracker, policy(10 * MIN), 20 * MIN), ["claude"]);
+  assert.deepEqual(dueIds(tracker, policy(60 * MIN), 21 * MIN), []);
+  assert.deepEqual(dueIds(tracker, policy(60 * MIN), 60 * MIN), ["claude"]);
 });
 
 test("provider model suffixes and casing merge into one provider", () => {
-  const tracker = createIdleTracker(0);
+  const tracker = createIdleTracker();
   tracker.recordUse("claude/claude-opus-5-5", 1 * MIN);
   tracker.observeQuota([{ id: "Claude", name: "Claude", readable: true, meters: {} }], 2 * MIN);
-  const providers = tracker.providers();
+  const providers = tracker.providers(policy(MIN), 2 * MIN);
   assert.equal(providers.length, 1);
   assert.equal(providers[0].name, "Claude");
   assert.equal(providers[0].lastUsedAt, 1 * MIN);
-});
-
-test("providers with no use and no readable quota are left out", () => {
-  const tracker = createIdleTracker(0);
-  tracker.observeQuota([{ id: "codex", name: "Codex", readable: false, meters: {} }], MIN);
-  assert.deepEqual(tracker.providers(), []);
 });
 
 test("quota meters read used or remaining, with spending always rising", () => {

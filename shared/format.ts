@@ -9,6 +9,11 @@ export function formatDuration(ms: number): string {
   return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
 }
 
+/** Display names can carry the account's email, which must not reach a notification service. */
+export function providerLabel(displayName: string): string {
+  return displayName.replace(/\s*\(.*\)\s*$/, "");
+}
+
 interface UsageSummaryInput {
   displayName: string;
   status: string;
@@ -22,10 +27,7 @@ function balanceText({ label, used, remaining, limit }: NonNullable<UsageSummary
   return used != null ? `${label} ${used} used` : null;
 }
 
-/**
- * "Claude: 5h 40%, Weekly 31%. Codex: 5h 2%." Providers with nothing to report are left out.
- * Display names can carry the account's email, which must not reach a notification service.
- */
+/** "Claude: 5h 40%, Weekly 31%. Codex: 5h 2%." Providers with nothing to report are left out. */
 export function formatUsage(providers: UsageSummaryInput[]): string | null {
   const lines: string[] = [];
   for (const provider of providers) {
@@ -38,7 +40,7 @@ export function formatUsage(providers: UsageSummaryInput[]): string | null {
       const text = balanceText(balance);
       if (text) items.push(text);
     }
-    if (items.length > 0) lines.push(`${provider.displayName.replace(/\s*\(.*\)\s*$/, "")}: ${items.join(", ")}.`);
+    if (items.length > 0) lines.push(`${providerLabel(provider.displayName)}: ${items.join(", ")}.`);
   }
   return lines.length > 0 ? lines.join(" ") : null;
 }

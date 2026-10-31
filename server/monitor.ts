@@ -1,8 +1,8 @@
 import type { PluginHandlerContext, PluginSettings } from "@getpaseo/plugin/server";
 import type { RpcOutput } from "@getpaseo/plugin";
-import { idleSettings, idleWindowMs, type statusRpc } from "../shared/contracts";
-import { formatDuration, formatUsage } from "../shared/format";
-import { createIdleTracker, quotaMeters } from "./idle-tracker";
+import { idleSettings, idleWindowMs, isWatched, type statusRpc } from "../shared/contracts";
+import { formatDuration, formatUsage, providerLabel } from "../shared/format";
+import { createIdleTracker, quotaMeters, type AlertPolicy, type ProviderUse } from "./idle-tracker";
 import { notify } from "./notify";
 
 type Paseo = PluginHandlerContext["paseo"];
@@ -12,13 +12,18 @@ const CHECK_MS = 60_000;
 const QUOTA_MS = 5 * 60_000;
 const AGENT_PAGE = 200;
 
+const NOTHING_IDLE: AlertPolicy = {
+  idleMs: Number.POSITIVE_INFINITY,
+  repeatMs: 0,
+  isWatched: () => false,
+};
+
 function iso(at: number | null): string | null {
   return at === null ? null : new Date(at).toISOString();
 }
 
 export function createMonitor(settings: PluginSettings<typeof idleSettings.schema>) {
-  const watchingSince = Date.now();
-  const tracker = createIdleTracker(watchingSince);
+  const tracker = createIdleTracker();
   let paseo: Paseo | null = null;
   let quotaCheckedAt: number | null = null;
   let checking = false;
@@ -34,6 +39,7 @@ export function createMonitor(settings: PluginSettings<typeof idleSettings.schem
         provider: agent.provider,
         activeAt: new Date(agent.updatedAt).getTime(),
       })),
+      Date.now(),
     );
   }
 
@@ -51,15 +57,26 @@ export function createMonitor(settings: PluginSettings<typeof idleSettings.schem
     quotaCheckedAt = now;
   }
 
-  function alertBody(now: number): string {
-    const lastUsed = tracker.lastUsedAt();
-    const parts = [
-      lastUsed === null
-        ? `No tokens seen in the ${formatDuration(now - watchingSince)} since watching began.`
-        : `No tokens used for ${formatDuration(now - lastUsed)}.`,
-    ];
-    if (quotaCheckedAt === null) parts.push("Use outside Paseo was not checked.");
-    return parts.join(" ");
+  async function readPolicy(): Promise<(AlertPolicy & { enabled: boolean }) | null> {
+    const state = await settings.read();
+    if (state.status !== "ready") return null;
+    const { enabled, idleAmount, idleUnit, repeatMinutes, providerOverrides } = state.values;
+    return {
+      enabled,
+      idleMs: idleWindowMs(idleAmount, idleUnit),
+      repeatMs: repeatMinutes * 60_000,
+      isWatched: (id, hasQuota) => isWatched(providerOverrides, id, hasQuota),
+    };
+  }
+
+  function alertBody(due: ProviderUse[], now: number): string {
+    return due
+      .map((use) => {
+        const idleFor = formatDuration(now - (use.lastUsedAt ?? use.firstSeenAt));
+        const note = use.quotaReadable ? "" : " (quota not readable)";
+        return `${providerLabel(use.name)} idle for ${idleFor}${note}.`;
+      })
+      .join(" ");
   }
 
   async function check(): Promise<void> {
@@ -73,13 +90,13 @@ export function createMonitor(settings: PluginSettings<typeof idleSettings.schem
           await readQuota(paseo, now).catch((error) => console.warn("Reading quota failed", error));
         }
       }
-      const state = await settings.read();
-      if (state.status !== "ready") return;
-      const { enabled, idleAmount, idleUnit, repeatMinutes } = state.values;
-      const fire = tracker.shouldAlert(idleWindowMs(idleAmount, idleUnit), now, repeatMinutes * 60_000);
-      if (!fire || !enabled) return;
-      const { summary, failed } = await notify("Paseo: tokens idle", alertBody(now));
-      (failed ? console.warn : console.log)(`Idle window passed. ${summary}`);
+      const policy = await readPolicy();
+      if (!policy) return;
+      const due = tracker.dueAlerts(policy, now);
+      if (due.length === 0 || !policy.enabled) return;
+      const { summary, failed } = await notify("Paseo: tokens idle", alertBody(due, now));
+      const ids = due.map((use) => use.id).join(", ");
+      (failed ? console.warn : console.log)(`Idle: ${ids}. ${summary}`);
     } catch (error) {
       console.warn("Idle check failed", error);
     } finally {
@@ -93,8 +110,7 @@ export function createMonitor(settings: PluginSettings<typeof idleSettings.schem
   return {
     /**
      * The runtime only hands out its client through RPCs and hooks, so quota and agent readings
-     * begin at the first of those. The timer runs regardless: until then no Paseo agent has run
-     * (its turn would have attached), so the idle clock is still right for Paseo's own use.
+     * begin at the first of those. Until then no provider is known, so nothing can alert.
      */
     attach(client: Paseo): void {
       if (paseo) return;
@@ -122,21 +138,18 @@ export function createMonitor(settings: PluginSettings<typeof idleSettings.schem
     },
 
     async status(): Promise<RpcOutput<typeof statusRpc>> {
-      const state = await settings.read();
-      const idleMs =
-        state.status === "ready"
-          ? idleWindowMs(state.values.idleAmount, state.values.idleUnit)
-          : Number.POSITIVE_INFINITY;
+      const now = Date.now();
+      const policy = (await readPolicy()) ?? NOTHING_IDLE;
       return {
         lastUsedAt: iso(tracker.lastUsedAt()),
-        watchingSince: new Date(watchingSince).toISOString(),
         quotaCheckedAt: iso(quotaCheckedAt),
-        idle: tracker.isIdle(idleMs, Date.now()),
-        providers: tracker.providers().map((use) => ({
+        providers: tracker.providers(policy, now).map((use) => ({
           id: use.id,
           name: use.name,
           lastUsedAt: iso(use.lastUsedAt),
           quotaReadable: use.quotaReadable,
+          hasQuota: use.hasQuota,
+          idle: use.idle,
         })),
       };
     },

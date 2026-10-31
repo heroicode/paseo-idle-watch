@@ -18,7 +18,18 @@ export interface ProviderUse {
   id: string;
   name: string;
   lastUsedAt: number | null;
+  /** The idle clock starts no earlier than this: use before it is unknown. */
+  firstSeenAt: number;
   quotaReadable: boolean;
+  /** Null until a quota read has answered for this provider. */
+  hasQuota: boolean | null;
+  lastAlertAt: number | null;
+}
+
+export interface AlertPolicy {
+  idleMs: number;
+  repeatMs: number;
+  isWatched(id: string, hasQuota: boolean | null): boolean;
 }
 
 interface QuotaWindow {
@@ -55,58 +66,70 @@ function providerKey(provider: string): string {
 }
 
 /**
- * Decides when tokens last moved, from two signals that cover for each other. Agent activity is
- * precise but only sees Paseo's agents. Provider quota also sees use outside Paseo but moves in
- * whole percents, so light use can go unseen for a long time.
+ * Decides when each provider's tokens last moved, from two signals that cover for each other.
+ * Agent activity is precise but only sees Paseo's agents. Provider quota also sees use outside
+ * Paseo but moves in whole percents, so light use can go unseen for a long time.
  */
-export function createIdleTracker(watchingSince: number) {
+export function createIdleTracker() {
   const providers = new Map<string, ProviderUse>();
   const meters = new Map<string, Record<string, number>>();
-  let lastAlertAt: number | null = null;
 
-  function entry(provider: string): ProviderUse {
+  function entry(provider: string, now: number): ProviderUse {
     const id = providerKey(provider);
     let use = providers.get(id);
     if (!use) {
-      use = { id, name: id, lastUsedAt: null, quotaReadable: false };
+      use = {
+        id,
+        name: id,
+        lastUsedAt: null,
+        firstSeenAt: now,
+        quotaReadable: false,
+        hasQuota: null,
+        lastAlertAt: null,
+      };
       providers.set(id, use);
     }
     return use;
   }
 
-  function recordUse(provider: string, at: number): void {
-    const use = entry(provider);
+  function recordUse(provider: string, at: number, now = at): void {
+    const use = entry(provider, now);
     use.lastUsedAt = Math.max(use.lastUsedAt ?? at, at);
   }
 
-  function lastUsedAt(): number | null {
-    let latest: number | null = null;
-    for (const { lastUsedAt: at } of providers.values()) {
-      if (at !== null && (latest === null || at > latest)) latest = at;
-    }
-    return latest;
-  }
-
-  function isIdle(idleMs: number, now: number): boolean {
-    return now - Math.max(lastUsedAt() ?? watchingSince, watchingSince) >= idleMs;
+  function isIdle(use: ProviderUse, idleMs: number, now: number): boolean {
+    return now - Math.max(use.lastUsedAt ?? use.firstSeenAt, use.firstSeenAt) >= idleMs;
   }
 
   return {
     recordUse,
-    lastUsedAt,
-    isIdle,
 
-    observeAgents(readings: AgentReading[]): void {
-      for (const { provider, activeAt } of readings) recordUse(provider, activeAt);
+    lastUsedAt(): number | null {
+      let latest: number | null = null;
+      for (const { lastUsedAt: at } of providers.values()) {
+        if (at !== null && (latest === null || at > latest)) latest = at;
+      }
+      return latest;
+    },
+
+    observeAgents(readings: AgentReading[], now: number): void {
+      for (const { provider, activeAt } of readings) recordUse(provider, activeAt, now);
     },
 
     /** A meter that falls is a window resetting, not use. The first reading is only a baseline. */
     observeQuota(readings: QuotaReading[], now: number): void {
+      const answered = new Set<string>();
       for (const reading of readings) {
-        const use = entry(reading.id);
+        const use = entry(reading.id, now);
+        answered.add(use.id);
         use.name = reading.name;
         use.quotaReadable = reading.readable;
-        if (!reading.readable) continue;
+        // An unreadable quota says nothing about whether one exists, so assume it does.
+        if (!reading.readable) {
+          use.hasQuota ??= true;
+          continue;
+        }
+        use.hasQuota = Object.keys(reading.meters).length > 0;
         const previous = meters.get(use.id);
         if (previous) {
           const rose = Object.entries(reading.meters).some(
@@ -116,24 +139,34 @@ export function createIdleTracker(watchingSince: number) {
         }
         meters.set(use.id, reading.meters);
       }
-    },
-
-    /** True on the check that first finds the window has passed, then every `repeatMs` if set. */
-    shouldAlert(idleMs: number, now: number, repeatMs = 0): boolean {
-      if (!isIdle(idleMs, now)) {
-        lastAlertAt = null;
-        return false;
+      // Paseo reports nothing for these, so there is no quota to watch.
+      for (const use of providers.values()) {
+        if (!answered.has(use.id)) use.hasQuota ??= false;
       }
-      const due =
-        lastAlertAt === null || (repeatMs > 0 && now - lastAlertAt >= repeatMs - REPEAT_SLACK_MS);
-      if (due) lastAlertAt = now;
-      return due;
     },
 
-    /** Providers worth showing: ones with use seen, or whose quota can be read. */
-    providers(): ProviderUse[] {
+    /** Each watched provider is due when it first passes the window, then every `repeatMs` if set. */
+    dueAlerts(policy: AlertPolicy, now: number): ProviderUse[] {
+      return [...providers.values()].filter((use) => {
+        if (!policy.isWatched(use.id, use.hasQuota) || !isIdle(use, policy.idleMs, now)) {
+          use.lastAlertAt = null;
+          return false;
+        }
+        const due =
+          use.lastAlertAt === null ||
+          (policy.repeatMs > 0 && now - use.lastAlertAt >= policy.repeatMs - REPEAT_SLACK_MS);
+        if (due) use.lastAlertAt = now;
+        return due;
+      });
+    },
+
+    /** Every provider seen, most recently used first, with whether it counts as idle right now. */
+    providers(policy: AlertPolicy, now: number): (ProviderUse & { idle: boolean })[] {
       return [...providers.values()]
-        .filter((use) => use.lastUsedAt !== null || use.quotaReadable)
+        .map((use) => ({
+          ...use,
+          idle: policy.isWatched(use.id, use.hasQuota) && isIdle(use, policy.idleMs, now),
+        }))
         .sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0));
     },
   };

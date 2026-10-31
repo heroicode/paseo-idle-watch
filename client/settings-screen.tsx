@@ -11,9 +11,9 @@ import {
 } from "@getpaseo/plugin/client/ui";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { idleSettings, testNotificationRpc, type IdleUnit } from "../shared/contracts";
+import { idleSettings, isWatched, testNotificationRpc, type IdleUnit } from "../shared/contracts";
 import { formatDuration } from "../shared/format";
-import { useIdleStatus } from "./idle-status";
+import { useIdleStatus, type IdleStatus } from "./idle-status";
 
 const UNITS = [
   { label: "Minutes", value: "minutes" },
@@ -64,28 +64,18 @@ function UnitToggle({
 }
 
 function ago(iso: string | null): string {
-  return iso ? `${formatDuration(Date.now() - new Date(iso).getTime())} ago` : "Not seen yet";
+  return iso ? `${formatDuration(Date.now() - new Date(iso).getTime())} ago` : "not seen yet";
 }
 
-function Status() {
-  const status = useIdleStatus();
-  if (!status) return <SettingsRow label="Status" hint="Waiting for the daemon" />;
-  return (
-    <>
-      {status.providers.map((provider) => (
-        <SettingsRow
-          key={provider.id}
-          label={provider.name}
-          hint={`${ago(provider.lastUsedAt)}${provider.quotaReadable ? "" : " · agents only, quota not readable"}`}
-        />
-      ))}
-      <SettingsRow label="Quota last checked" hint={ago(status.quotaCheckedAt)} />
-    </>
-  );
+function providerHint(provider: IdleStatus["providers"][number]): string {
+  const used = `Last used: ${ago(provider.lastUsedAt)}`;
+  if (provider.hasQuota === false) return `${used} · no quota, so off unless you turn it on`;
+  return provider.quotaReadable ? used : `${used} · quota not readable, agent activity only`;
 }
 
 export function SettingsScreen({ theme }: PluginSurfaceProps) {
   const settings = useSettings(idleSettings);
+  const status = useIdleStatus();
   const sendTest = useRpc(testNotificationRpc);
   const [amount, setAmount] = useState<string | null>(null);
   const [unit, setUnit] = useState<IdleUnit | null>(null);
@@ -115,7 +105,7 @@ export function SettingsScreen({ theme }: PluginSurfaceProps) {
       <SettingsCard>
         <SettingsSwitch
           label="Notify when idle"
-          hint="Tokens are watched on every provider."
+          hint="Alerts when any watched provider below goes idle."
           value={values.enabled}
           disabled={settings.saving}
           onValueChange={(enabled) => void settings.save({ ...values, enabled }, revision)}
@@ -170,7 +160,23 @@ export function SettingsScreen({ theme }: PluginSurfaceProps) {
         />
       </SettingsCard>
       <SettingsCard>
-        <Status />
+        {status ? null : <SettingsRow label="Providers" hint="Waiting for the daemon" />}
+        {status?.providers.map((provider) => (
+          <SettingsSwitch
+            key={provider.id}
+            label={provider.name}
+            hint={providerHint(provider)}
+            value={isWatched(values.providerOverrides, provider.id, provider.hasQuota)}
+            disabled={settings.saving}
+            onValueChange={(watched) =>
+              void settings.save(
+                { ...values, providerOverrides: { ...values.providerOverrides, [provider.id]: watched } },
+                revision,
+              )
+            }
+          />
+        ))}
+        {status ? <SettingsRow label="Quota last checked" hint={ago(status.quotaCheckedAt)} /> : null}
       </SettingsCard>
     </SettingsSection>
   );

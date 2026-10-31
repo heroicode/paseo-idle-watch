@@ -5,6 +5,7 @@ import {
   SettingsCard,
   SettingsRow,
   SettingsSection,
+  SettingsSelect,
   SettingsSwitch,
   TextInput,
 } from "@getpaseo/plugin/client/ui";
@@ -18,6 +19,15 @@ const UNITS = [
   { label: "Minutes", value: "minutes" },
   { label: "Hours", value: "hours" },
 ] as const;
+
+const REPEATS = [
+  { label: "Off", value: "0" },
+  { label: "Every minute", value: "1" },
+  { label: "Every 5 minutes", value: "5" },
+  { label: "Every 15 minutes", value: "15" },
+  { label: "Every 30 minutes", value: "30" },
+  { label: "Every hour", value: "60" },
+];
 
 type Theme = PluginSurfaceProps["theme"];
 
@@ -105,7 +115,7 @@ export function SettingsScreen({ theme }: PluginSurfaceProps) {
       <SettingsCard>
         <SettingsSwitch
           label="Notify when idle"
-          hint="Tokens are watched on every provider. You get one notification per idle stretch."
+          hint="Tokens are watched on every provider."
           value={values.enabled}
           disabled={settings.saving}
           onValueChange={(enabled) => void settings.save({ ...values, enabled }, revision)}
@@ -138,6 +148,14 @@ export function SettingsScreen({ theme }: PluginSurfaceProps) {
           onPress={() =>
             void settings.save({ ...values, idleAmount: parsedAmount, idleUnit: selectedUnit }, revision)
           }
+        />
+        <SettingsSelect
+          label="Repeat while idle"
+          hint="Keeps notifying until tokens are used again."
+          value={String(values.repeatMinutes)}
+          options={REPEATS}
+          disabled={settings.saving}
+          onValueChange={(repeat) => void settings.save({ ...values, repeatMinutes: Number(repeat) }, revision)}
         />
         <SettingsAction
           label="Test notification"

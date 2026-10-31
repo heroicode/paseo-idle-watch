@@ -1,3 +1,6 @@
+/** Checks run on a timer that drifts, so a repeat due a moment from now counts as due. */
+const REPEAT_SLACK_MS = 5_000;
+
 export interface AgentReading {
   provider: string;
   activeAt: number;
@@ -59,7 +62,7 @@ function providerKey(provider: string): string {
 export function createIdleTracker(watchingSince: number) {
   const providers = new Map<string, ProviderUse>();
   const meters = new Map<string, Record<string, number>>();
-  let alerted = false;
+  let lastAlertAt: number | null = null;
 
   function entry(provider: string): ProviderUse {
     const id = providerKey(provider);
@@ -115,12 +118,16 @@ export function createIdleTracker(watchingSince: number) {
       }
     },
 
-    /** True once per idle stretch: on the check that first finds the window has passed. */
-    shouldAlert(idleMs: number, now: number): boolean {
-      const idle = isIdle(idleMs, now);
-      const fire = idle && !alerted;
-      alerted = idle;
-      return fire;
+    /** True on the check that first finds the window has passed, then every `repeatMs` if set. */
+    shouldAlert(idleMs: number, now: number, repeatMs = 0): boolean {
+      if (!isIdle(idleMs, now)) {
+        lastAlertAt = null;
+        return false;
+      }
+      const due =
+        lastAlertAt === null || (repeatMs > 0 && now - lastAlertAt >= repeatMs - REPEAT_SLACK_MS);
+      if (due) lastAlertAt = now;
+      return due;
     },
 
     /** Providers worth showing: ones with use seen, or whose quota can be read. */

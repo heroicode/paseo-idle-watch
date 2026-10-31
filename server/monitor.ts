@@ -75,8 +75,8 @@ export function createMonitor(settings: PluginSettings<typeof idleSettings.schem
       }
       const state = await settings.read();
       if (state.status !== "ready") return;
-      const { enabled, idleAmount, idleUnit } = state.values;
-      const fire = tracker.shouldAlert(idleWindowMs(idleAmount, idleUnit), now);
+      const { enabled, idleAmount, idleUnit, repeatMinutes } = state.values;
+      const fire = tracker.shouldAlert(idleWindowMs(idleAmount, idleUnit), now, repeatMinutes * 60_000);
       if (!fire || !enabled) return;
       const { summary, failed } = await notify("Paseo: tokens idle", alertBody(now));
       (failed ? console.warn : console.log)(`Idle window passed. ${summary}`);

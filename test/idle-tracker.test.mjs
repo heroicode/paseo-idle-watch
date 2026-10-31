@@ -24,6 +24,23 @@ test("alerts once per idle stretch and rearms after use", () => {
   assert.equal(tracker.shouldAlert(10 * MIN, 511 * MIN), true);
 });
 
+test("repeats on schedule while idle, and stops when tokens are used", () => {
+  const tracker = createIdleTracker(0);
+  assert.equal(tracker.shouldAlert(10 * MIN, 10 * MIN, 5 * MIN), true);
+  assert.equal(tracker.shouldAlert(10 * MIN, 14 * MIN, 5 * MIN), false);
+  assert.equal(tracker.shouldAlert(10 * MIN, 15 * MIN, 5 * MIN), true);
+  assert.equal(tracker.shouldAlert(10 * MIN, 16 * MIN, 5 * MIN), false);
+  tracker.recordUse("claude", 17 * MIN);
+  assert.equal(tracker.shouldAlert(10 * MIN, 22 * MIN, 5 * MIN), false);
+  assert.equal(tracker.shouldAlert(10 * MIN, 27 * MIN, 5 * MIN), true);
+});
+
+test("a check arriving a moment early still counts as the repeat", () => {
+  const tracker = createIdleTracker(0);
+  assert.equal(tracker.shouldAlert(MIN, 60_000, MIN), true);
+  assert.equal(tracker.shouldAlert(MIN, 119_900, MIN), true);
+});
+
 test("any provider's use keeps the whole watch from alerting", () => {
   const tracker = createIdleTracker(0);
   tracker.recordUse("claude", 1 * MIN);

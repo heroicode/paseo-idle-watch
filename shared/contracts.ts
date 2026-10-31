@@ -9,6 +9,8 @@ export const idleSettings = defineSettings({
     enabled: z.boolean().default(true),
     idleAmount: z.number().positive().default(2),
     idleUnit: z.enum(["minutes", "hours"]).default("hours"),
+    /** How often to alert again while still idle. 0 alerts once per idle stretch. */
+    repeatMinutes: z.number().int().min(0).default(0),
   }),
 });
 

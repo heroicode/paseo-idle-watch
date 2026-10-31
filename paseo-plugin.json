@@ -1,0 +1,8 @@
+{
+  "id": "paseo-idle-watch",
+  "name": "Idle watch",
+  "description": "Notifies you when no tokens have been used on any provider for a while.",
+  "requirements": {
+    "paseo": ">=0.13.0"
+  }
+}

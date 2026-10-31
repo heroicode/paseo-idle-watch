@@ -1,15 +1,15 @@
-import { useRpc, useSettings } from "@getpaseo/plugin/client";
+import { useRpc, useSettings, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import {
   Loading,
   SettingsAction,
   SettingsCard,
-  SettingsInput,
   SettingsRow,
   SettingsSection,
-  SettingsSelect,
   SettingsSwitch,
+  TextInput,
 } from "@getpaseo/plugin/client/ui";
 import { useState } from "react";
+import { Pressable, Text, View } from "react-native";
 import { idleSettings, testNotificationRpc, type IdleUnit } from "../shared/contracts";
 import { formatDuration } from "../shared/format";
 import { useIdleStatus } from "./idle-status";
@@ -18,6 +18,40 @@ const UNITS = [
   { label: "Minutes", value: "minutes" },
   { label: "Hours", value: "hours" },
 ] as const;
+
+type Theme = PluginSurfaceProps["theme"];
+
+/** Paseo's select only comes as a whole row, so the unit is a small toggle that fits beside the input. */
+function UnitToggle({
+  value,
+  theme,
+  onChange,
+}: {
+  value: IdleUnit;
+  theme: Theme;
+  onChange(unit: IdleUnit): void;
+}) {
+  return (
+    <View style={{ flexDirection: "row", borderRadius: 6, borderWidth: 1, borderColor: theme.colors.border, overflow: "hidden" }}>
+      {UNITS.map((unit) => {
+        const selected = unit.value === value;
+        return (
+          <Pressable
+            key={unit.value}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            onPress={() => onChange(unit.value)}
+            style={{ paddingHorizontal: 10, paddingVertical: 6, backgroundColor: selected ? theme.colors.accent : "transparent" }}
+          >
+            <Text style={{ fontSize: 13, color: selected ? theme.colors.accentForeground : theme.colors.foreground }}>
+              {unit.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
 
 function ago(iso: string | null): string {
   return iso ? `${formatDuration(Date.now() - new Date(iso).getTime())} ago` : "Not seen yet";
@@ -40,7 +74,7 @@ function Status() {
   );
 }
 
-export function SettingsScreen() {
+export function SettingsScreen({ theme }: PluginSurfaceProps) {
   const settings = useSettings(idleSettings);
   const sendTest = useRpc(testNotificationRpc);
   const [amount, setAmount] = useState<string | null>(null);
@@ -76,13 +110,27 @@ export function SettingsScreen() {
           disabled={settings.saving}
           onValueChange={(enabled) => void settings.save({ ...values, enabled }, revision)}
         />
-        <SettingsInput
-          label="Idle for"
-          initialValue={String(values.idleAmount)}
-          error={amountValid ? settings.saveError : "Enter a number above 0"}
-          onChangeText={setAmount}
-        />
-        <SettingsSelect<IdleUnit> label="Unit" value={selectedUnit} options={UNITS} onValueChange={setUnit} />
+        <SettingsRow label="Idle for" error={amountValid ? settings.saveError : "Enter a number above 0"}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <TextInput
+              accessibilityLabel="Idle amount"
+              keyboardType="decimal-pad"
+              defaultValue={String(values.idleAmount)}
+              onChangeText={setAmount}
+              style={{
+                width: 64,
+                paddingHorizontal: 8,
+                paddingVertical: 6,
+                borderRadius: 6,
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+                color: theme.colors.foreground,
+                textAlign: "right",
+              }}
+            />
+            <UnitToggle value={selectedUnit} theme={theme} onChange={setUnit} />
+          </View>
+        </SettingsRow>
         <SettingsAction
           label="Apply idle window"
           actionLabel="Save"
@@ -93,11 +141,11 @@ export function SettingsScreen() {
         />
         <SettingsAction
           label="Test notification"
-          hint={testResult ?? "Posts to the desktop of the machine running the daemon."}
+          hint={testResult ?? "Posts to this machine's desktop and to the Paseo mobile app."}
           actionLabel="Send"
           onPress={() =>
             void sendTest({}).then(
-              ({ error }) => setTestResult(error ?? "Sent"),
+              ({ summary }) => setTestResult(summary),
               (error: unknown) => setTestResult(String(error)),
             )
           }

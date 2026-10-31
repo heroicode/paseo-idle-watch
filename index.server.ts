@@ -1,7 +1,7 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { idleSettings, statusRpc, testNotificationRpc } from "./shared/contracts";
 import { createMonitor } from "./server/monitor";
-import { postDesktopNotification } from "./server/notify";
+import { notify } from "./server/notify";
 
 export default function contribute(server: PluginServerContext) {
   const monitor = createMonitor(server.registerSettings(idleSettings));
@@ -12,12 +12,8 @@ export default function contribute(server: PluginServerContext) {
   });
 
   server.handle(testNotificationRpc, async () => {
-    try {
-      await postDesktopNotification("Paseo: tokens idle", "Test notification from Idle watch.");
-      return { error: null };
-    } catch (error) {
-      return { error: error instanceof Error ? error.message : String(error) };
-    }
+    const { summary } = await notify("Paseo: tokens idle", "Test notification from Idle watch.");
+    return { summary };
   });
 
   const removeStarted = server.on("agent.turn_started", async ({ agent }, { paseo }) => {

@@ -3,7 +3,7 @@ import type { RpcOutput } from "@getpaseo/plugin";
 import { idleSettings, idleWindowMs, type statusRpc } from "../shared/contracts";
 import { formatDuration } from "../shared/format";
 import { createIdleTracker, quotaMeters } from "./idle-tracker";
-import { postDesktopNotification } from "./notify";
+import { notify } from "./notify";
 
 type Paseo = PluginHandlerContext["paseo"];
 
@@ -78,8 +78,8 @@ export function createMonitor(settings: PluginSettings<typeof idleSettings.schem
       const { enabled, idleAmount, idleUnit } = state.values;
       const fire = tracker.shouldAlert(idleWindowMs(idleAmount, idleUnit), now);
       if (!fire || !enabled) return;
-      console.log("Idle window passed, notifying");
-      await postDesktopNotification("Paseo: tokens idle", alertBody(now));
+      const { summary, failed } = await notify("Paseo: tokens idle", alertBody(now));
+      (failed ? console.warn : console.log)(`Idle window passed. ${summary}`);
     } catch (error) {
       console.warn("Idle check failed", error);
     } finally {

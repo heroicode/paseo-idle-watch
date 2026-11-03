@@ -12,7 +12,7 @@ import {
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { idleSettings, isWatched, testNotificationRpc, type IdleUnit } from "../shared/contracts";
-import { formatDuration } from "../shared/format";
+import { formatDuration, providerLabel } from "../shared/format";
 import { useIdleStatus, type IdleStatus } from "./idle-status";
 
 const UNITS = [
@@ -164,7 +164,7 @@ export function SettingsScreen({ theme }: PluginSurfaceProps) {
         {status?.providers.map((provider) => (
           <SettingsSwitch
             key={provider.id}
-            label={provider.name}
+            label={providerLabel(provider.name)}
             hint={providerHint(provider)}
             value={isWatched(values.providerOverrides, provider.id, provider.hasQuota)}
             disabled={settings.saving}

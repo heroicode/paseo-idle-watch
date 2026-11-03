@@ -2,6 +2,9 @@
   "id": "paseo-idle-watch",
   "name": "Idle watch",
   "description": "Notifies you when any provider you watch has used no tokens for a while.",
+  "media": [
+    "images/settings.png"
+  ],
   "requirements": {
     "paseo": ">=0.13.0"
   }

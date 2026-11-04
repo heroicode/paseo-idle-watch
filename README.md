@@ -7,8 +7,10 @@ Each provider has its own idle clock. If Claude is busy but Codex has been idle 
 ## Install
 
 ```bash
-paseo plugin add git:heroicode/paseo-idle-watch
+paseo plugin add heroicode/idle-watch
 ```
+
+This installs the reviewed release from the [Paseo plugin registry](https://paseo.sh/plugins/heroicode/idle-watch). To follow this repository's `main` branch instead, use `paseo plugin add git:heroicode/paseo-idle-watch`.
 
 Plugins must be enabled on the daemon under **Settings → Plugins → Enable plugins**. Requires Paseo 0.13 or later.
 
